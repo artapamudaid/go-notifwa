@@ -12,6 +12,7 @@ import (
 
 	"go-notifwa/models"
 	"go-notifwa/whatsapp"
+	"go-notifwa/worker"
 
 	"github.com/gofiber/fiber/v2"
 	"go.mau.fi/whatsmeow"
@@ -63,10 +64,6 @@ func SendText(c *fiber.Ctx) error {
 
 	targetJID := parseJID(req.Number)
 
-	// Random delay (1-5 seconds)
-	delay := time.Duration(rand.Intn(4000)+1000) * time.Millisecond
-	time.Sleep(delay)
-
 	// Add watermark
 	watermark := fmt.Sprintf("\n\n---\n*Sent at: %s*", time.Now().Format("2006-01-02 15:04:05"))
 	finalText := req.Text + watermark
@@ -75,19 +72,16 @@ func SendText(c *fiber.Ctx) error {
 		Conversation: proto.String(finalText),
 	}
 
-	result, err := client.SendMessage(context.Background(), targetJID, msg)
-	if err != nil {
-		// Ubah jadi status false agar Laravel tau ini error
-		return c.JSON(fiber.Map{
-			"status":  false,
-			"message": "Failed to send message: " + err.Error(),
-		})
+	worker.JobQueue <- worker.SendJob{
+		Client:    client,
+		TargetJID: targetJID,
+		Message:   msg,
+		Type:      "Text",
 	}
 
 	return c.JSON(fiber.Map{
 		"status":  true,
-		"data":    result,
-		"message": "Message sent successfully",
+		"message": "Message queued successfully",
 	})
 }
 
@@ -139,10 +133,6 @@ func SendMedia(c *fiber.Ctx) error {
 
 	msg := &waProto.Message{}
 	mimetype := http.DetectContentType(data)
-
-	// Random delay (1-5 seconds)
-	delay := time.Duration(rand.Intn(4000)+1000) * time.Millisecond
-	time.Sleep(delay)
 
 	// Add watermark
 	watermark := fmt.Sprintf("\n\n---\n*Sent at: %s*", time.Now().Format("2006-01-02 15:04:05"))
@@ -200,15 +190,16 @@ func SendMedia(c *fiber.Ctx) error {
 
 	targetJID := parseJID(req.Number)
 
-	result, err := client.SendMessage(context.Background(), targetJID, msg)
-	if err != nil {
-		return c.JSON(fiber.Map{"status": false, "message": "Gagal mengirim media: " + err.Error()})
+	worker.JobQueue <- worker.SendJob{
+		Client:    client,
+		TargetJID: targetJID,
+		Message:   msg,
+		Type:      "Media",
 	}
 
 	return c.JSON(fiber.Map{
 		"status":  true,
-		"data":    result,
-		"message": "Media sent successfully",
+		"message": "Media queued successfully",
 	})
 }
 
@@ -285,21 +276,18 @@ func SendPoll(c *fiber.Ctx) error {
 		maxSelections = 0 // 0 means multiple selections allowed (unlimited)
 	}
 
-	// Random delay (1-5 seconds)
-	delay := time.Duration(rand.Intn(4000)+1000) * time.Millisecond
-	time.Sleep(delay)
-
 	msg := client.BuildPollCreation(req.Name, options, maxSelections)
 
-	result, err := client.SendMessage(context.Background(), targetJID, msg)
-	if err != nil {
-		return c.JSON(fiber.Map{"status": false, "message": "Failed to send poll: " + err.Error()})
+	worker.JobQueue <- worker.SendJob{
+		Client:    client,
+		TargetJID: targetJID,
+		Message:   msg,
+		Type:      "Poll",
 	}
 
 	return c.JSON(fiber.Map{
 		"status":  true,
-		"data":    result,
-		"message": "Poll sent successfully",
+		"message": "Poll queued successfully",
 	})
 }
 

@@ -6,6 +6,7 @@ import (
 	"go-notifwa/database"
 	"go-notifwa/routes"
 	"go-notifwa/whatsapp"
+	"go-notifwa/worker"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
@@ -20,6 +21,9 @@ func main() {
 
 	// Initialize Fiber App
 	app := fiber.New()
+
+	// Initialize Worker Pool
+	worker.StartWorkers(5) // Create 5 background workers
 
 	// Setup Middleware
 	app.Use(logger.New())
