@@ -12,10 +12,12 @@ import (
 var DB *sql.DB
 
 func InitDB() {
-	// Karena go-notifwa ada di sebelah folder notifwa, kita baca .env dari notifwa
 	err := godotenv.Load("../notifwa/.env")
 	if err != nil {
-		log.Println("Peringatan: Gagal load file .env (mungkin lokasinya berbeda)")
+		err = godotenv.Load(".env")
+		if err != nil {
+			log.Println("Peringatan: Gagal load file .env (mungkin lokasinya berbeda atau berjalan di Docker dengan env vars)")
+		}
 	}
 
 	dbHost := os.Getenv("DB_HOST")

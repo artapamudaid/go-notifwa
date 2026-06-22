@@ -43,9 +43,12 @@ docker run -d \
   -p 8088:8088 \
   -v $(pwd)/.env:/app/.env \
   -v $(pwd)/examplestore.db:/app/examplestore.db \
+  --add-host host.docker.internal:host-gateway \
   --restart unless-stopped \
   go-notifwa
 ```
+
+> **Important note on Database Connection**: If your MySQL database is running on your host machine (not in Docker), the container cannot connect to it using `localhost` or `127.0.0.1` as `DB_HOST` in your `.env` file. You need to change `DB_HOST` to `host.docker.internal` in your `.env` file for the container to reach the host's database.
 
 ---
 
