@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -290,4 +289,3 @@ func SendPoll(c *fiber.Ctx) error {
 		"message": "Poll queued successfully",
 	})
 }
-
