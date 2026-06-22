@@ -44,4 +44,9 @@ func processJob(workerID int, job SendJob) {
 	} else {
 		log.Printf("[Worker %d] Successfully sent %s message to %s\n", workerID, job.Type, job.TargetJID)
 	}
+
+	// Auto clean / Garbage Collection Helper
+	// Melepaskan referensi memori agar struct message (yang mungkin memuat base64/media besar) bisa segera dihapus oleh GC Go
+	job.Message = nil
+	job.Client = nil
 }

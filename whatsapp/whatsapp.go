@@ -38,6 +38,12 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 			switch v := evt.(type) {
 			case *events.Message:
 				fmt.Println("Pesan baru:", v.Message.GetConversation())
+			case *events.LoggedOut:
+				// Auto clean garbage collection: Hapus client dari memory (Map) ketika device logout
+				fmt.Printf("Device %s logged out. Cleaning up memory...\n", device)
+				client.Disconnect()
+				delete(Clients, device)
+				database.SetStatus(device, "Disconnected")
 			}
 		})
 		Clients[device] = client
