@@ -22,6 +22,14 @@ The server will start at `http://localhost:3001` (or whatever is defined in your
 
 ---
 
+## High-Performance Worker Queue
+This gateway implements a **Multi-Worker Pool Queue**. 
+When the API receives a `POST` request to send a message, media, or poll, it does **not** block to wait for WhatsApp to send it. Instead, it places the job in a background channel and immediately returns an HTTP success response. 
+
+This allows you to send **blasts to thousands of numbers concurrently** without experiencing HTTP timeouts from your Laravel / PHP backend. The background workers will then process the queue safely, applying a random 1-5 second delay per message to prevent bans, while memory references are automatically cleared (Garbage Collected) after each send.
+
+---
+
 ## Docker Deployment
 
 You can also deploy this application using Docker.
@@ -35,6 +43,8 @@ docker build -t go-notifwa .
 ### 2. Run the Container
 
 Make sure you have an `.env` file ready. Also, create an empty `examplestore.db` file to persist your WhatsApp sessions if you don't have one yet.
+
+> **Memory GC Optimization**: The Dockerfile automatically injects `ENV GOMEMLIMIT=250MiB` to optimize Go's Garbage Collector. This ensures that the worker queue aggressively clears old memory references, preventing memory leaks and keeping the container's RAM usage strictly below 250MB.
 
 ```bash
 touch examplestore.db
@@ -69,8 +79,7 @@ All endpoints expect data encoded as `application/x-www-form-urlencoded` or `app
 ```json
 {
   "status": true,
-  "data": { ... },
-  "message": "Message sent successfully"
+  "message": "Message queued successfully"
 }
 ```
 

@@ -29,6 +29,9 @@ WORKDIR /app
 # Copy the Pre-built binary file from the previous stage
 COPY --from=builder /app/main .
 
+# Optimize Go Garbage Collection for Container (Limit 250 MB)
+ENV GOMEMLIMIT=250MiB
+
 # Expose port 8088 to the outside world
 EXPOSE 8088
 
