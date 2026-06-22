@@ -18,7 +18,34 @@ WhatsApp Gateway written in Go using [Fiber](https://gofiber.io/) and [Whatsmeow
    go run main.go
    ```
 
-The server will start at `http://localhost:3001`.
+The server will start at `http://localhost:3001` (or whatever is defined in your `.env` or main.go, defaults to `8088`).
+
+---
+
+## Docker Deployment
+
+You can also deploy this application using Docker.
+
+### 1. Build the Image
+
+```bash
+docker build -t go-notifwa .
+```
+
+### 2. Run the Container
+
+Make sure you have an `.env` file ready. Also, create an empty `examplestore.db` file to persist your WhatsApp sessions if you don't have one yet.
+
+```bash
+touch examplestore.db
+docker run -d \
+  --name go-notifwa \
+  -p 8088:8088 \
+  -v $(pwd)/.env:/app/.env \
+  -v $(pwd)/examplestore.db:/app/examplestore.db \
+  --restart unless-stopped \
+  go-notifwa
+```
 
 ---
 
