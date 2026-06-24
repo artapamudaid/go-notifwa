@@ -53,7 +53,6 @@ docker run -d \
   -p 8088:8088 \
   -v $(pwd)/.env:/app/.env \
   -v $(pwd)/examplestore.db:/app/examplestore.db \
-  --add-host host.docker.internal:host-gateway \
   --restart unless-stopped \
   go-notifwa
 ```
