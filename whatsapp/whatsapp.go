@@ -15,6 +15,7 @@ import (
 )
 
 var Clients = make(map[string]*whatsmeow.Client)
+var statusCallbacks = make(map[string]func())
 var DB *sqlstore.Container
 
 func InitWhatsApp() {
@@ -26,9 +27,11 @@ func InitWhatsApp() {
 	DB = container
 }
 
-// Fungsi untuk memulai koneksi device tertentu dan mengirimkan event QR/Login
-func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallback func()) {
-	// Jika belum ada di map, buat client baru
+func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallback func(), disconnectCallback func()) {
+	if disconnectCallback != nil {
+		statusCallbacks[device] = disconnectCallback
+	}
+
 	if Clients[device] == nil {
 		deviceStore := DB.NewDevice()
 		clientLog := waLog.Stdout("Client", "DEBUG", true)
@@ -38,11 +41,20 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 			switch v := evt.(type) {
 			case *events.Message:
 				fmt.Println("Pesan baru:", v.Message.GetConversation())
+			case *events.Disconnected:
+				fmt.Printf("Device %s terputus dari WA\n", device)
+				database.SetStatus(device, "Disconnected")
+				if cb, ok := statusCallbacks[device]; ok {
+					cb()
+				}
 			case *events.LoggedOut:
-				// Auto clean garbage collection: Hapus client dari memory (Map) ketika device logout
 				fmt.Printf("Device %s logged out. Cleaning up memory...\n", device)
 				client.Disconnect()
 				delete(Clients, device)
+				if cb, ok := statusCallbacks[device]; ok {
+					cb()
+				}
+				delete(statusCallbacks, device)
 				database.SetStatus(device, "Disconnected")
 			}
 		})
@@ -96,4 +108,26 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 			successCallback()
 		}
 	}
+}
+
+func LogoutDevice(device string) error {
+	client, exists := Clients[device]
+	if !exists {
+		return fmt.Errorf("device %s tidak ditemukan", device)
+	}
+
+	if client.Store != nil && client.Store.ID != nil {
+		if err := DB.DeleteDevice(context.Background(), client.Store); err != nil {
+			fmt.Printf("Gagal hapus device %s dari SQLite: %v\n", device, err)
+		} else {
+			fmt.Printf("Device %s berhasil dihapus dari SQLite\n", device)
+		}
+	}
+
+	client.Disconnect()
+	delete(Clients, device)
+	delete(statusCallbacks, device)
+	database.SetStatus(device, "Disconnected")
+
+	return nil
 }

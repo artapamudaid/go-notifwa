@@ -1,9 +1,10 @@
 package controllers
 
 import (
+	"encoding/json"
 	"log"
 
-	"go-notifwa/whatsapp" // Sesuaikan nama module di go.mod Anda jika berbeda
+	"go-notifwa/whatsapp"
 
 	"github.com/gofiber/websocket/v2"
 )
@@ -69,8 +70,20 @@ func WsConnect(c *websocket.Conn) {
 		}
 	}
 
-	// Mulai koneksi Whatsmeow
-	whatsapp.ConnectDevice(device, qrCallback, successCallback)
+	disconnectCallback := func() {
+		msg := WsResponse{
+			Event:   "connection-closed",
+			Token:   device,
+			Message: "WhatsApp disconnected",
+		}
+		if err := c.WriteJSON(msg); err != nil {
+			log.Println("Gagal mengirim status Disconnected ke frontend:", err)
+		} else {
+			log.Println("Status Disconnected dikirim ke frontend untuk device:", device)
+		}
+	}
+
+	whatsapp.ConnectDevice(device, qrCallback, successCallback, disconnectCallback)
 
 	// Menahan koneksi WS agar tetap hidup
 	for {
@@ -82,7 +95,15 @@ func WsConnect(c *websocket.Conn) {
 
 		if messageType == websocket.TextMessage {
 			log.Println("Pesan dari Frontend:", string(message))
-			// Di sini Anda bisa menangani event "LogoutDevice"
+			var msg map[string]interface{}
+			if json.Unmarshal(message, &msg) == nil {
+				if event, ok := msg["event"].(string); ok && event == "LogoutDevice" {
+					log.Println("Menerima perintah logout device:", device)
+					if err := whatsapp.LogoutDevice(device); err != nil {
+						log.Println("Gagal logout:", err)
+					}
+				}
+			}
 		}
 	}
 }

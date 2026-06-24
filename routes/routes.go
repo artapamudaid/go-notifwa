@@ -24,4 +24,5 @@ func SetupRoutes(app *fiber.App) {
 	app.Post("/backend-send-media", controllers.SendMedia)
 	app.Post("/backend-send-poll", controllers.SendPoll)
 	app.Post("/backend-getgroups", controllers.GetGroups)
+	app.Post("/backend-logout", controllers.LogoutDevice)
 }

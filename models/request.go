@@ -26,3 +26,7 @@ type SendPollRequest struct {
 	Options   string `form:"options"`
 	Countable bool   `form:"countable"`
 }
+
+type LogoutRequest struct {
+	Token string `json:"token" form:"token"`
+}

@@ -289,3 +289,23 @@ func SendPoll(c *fiber.Ctx) error {
 		"message": "Poll queued successfully",
 	})
 }
+
+func LogoutDevice(c *fiber.Ctx) error {
+	req := new(models.LogoutRequest)
+	if err := c.BodyParser(req); err != nil {
+		return c.JSON(fiber.Map{"status": false, "message": "Invalid request body"})
+	}
+
+	if req.Token == "" {
+		return c.JSON(fiber.Map{"status": false, "message": "Token is required"})
+	}
+
+	if err := whatsapp.LogoutDevice(req.Token); err != nil {
+		return c.JSON(fiber.Map{"status": false, "message": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"status":  true,
+		"message": "Device logged out successfully",
+	})
+}
