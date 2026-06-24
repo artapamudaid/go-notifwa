@@ -27,12 +27,17 @@ func InitWhatsApp() {
 	DB = container
 }
 
-func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallback func(), disconnectCallback func()) {
+func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallback func(), disconnectCallback func(), errorCallback func(string)) {
 	if disconnectCallback != nil {
 		statusCallbacks[device] = disconnectCallback
 	}
 
-	if Clients[device] == nil {
+	if Clients[device] == nil || (Clients[device] != nil && Clients[device].Store.ID == nil) {
+		if old, ok := Clients[device]; ok {
+			old.Disconnect()
+			delete(Clients, device)
+		}
+
 		deviceStore := DB.NewDevice()
 		clientLog := waLog.Stdout("Client", "DEBUG", true)
 		client := whatsmeow.NewClient(deviceStore, clientLog)
@@ -72,6 +77,9 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 		err := client.Connect()
 		if err != nil {
 			fmt.Println("Error connecting:", err)
+			if errorCallback != nil {
+				errorCallback(err.Error())
+			}
 			return
 		}
 
@@ -101,6 +109,11 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 			if err == nil {
 				database.SetStatus(device, "Connected")
 				successCallback()
+			} else {
+				fmt.Println("Error reconnecting:", err)
+				if errorCallback != nil {
+					errorCallback(err.Error())
+				}
 			}
 		} else {
 			// Jika sudah connect, langsung panggil success

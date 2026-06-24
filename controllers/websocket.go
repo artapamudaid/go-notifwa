@@ -83,7 +83,20 @@ func WsConnect(c *websocket.Conn) {
 		}
 	}
 
-	whatsapp.ConnectDevice(device, qrCallback, successCallback, disconnectCallback)
+	errorCallback := func(errMsg string) {
+		msg := WsResponse{
+			Event:   "connection-error",
+			Token:   device,
+			Message: errMsg,
+		}
+		if err := c.WriteJSON(msg); err != nil {
+			log.Println("Gagal mengirim error ke frontend:", err)
+		} else {
+			log.Println("Error dikirim ke frontend untuk device:", device, "-", errMsg)
+		}
+	}
+
+	whatsapp.ConnectDevice(device, qrCallback, successCallback, disconnectCallback, errorCallback)
 
 	// Menahan koneksi WS agar tetap hidup
 	for {
