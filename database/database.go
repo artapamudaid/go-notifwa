@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 
@@ -12,22 +13,15 @@ import (
 var DB *sql.DB
 
 func InitDB() {
-	err := godotenv.Load("../notifwa/.env")
-	if err != nil {
-		err = godotenv.Load(".env")
-		if err != nil {
-			log.Println("Peringatan: Gagal load file .env (mungkin lokasinya berbeda atau berjalan di Docker dengan env vars)")
-		}
-	}
+	_ = godotenv.Load()
 
-	dbHost := os.Getenv("DB_HOST")
-	dbPort := os.Getenv("DB_PORT")
-	dbUser := os.Getenv("DB_USERNAME")
-	dbPass := os.Getenv("DB_PASSWORD")
-	dbName := os.Getenv("DB_DATABASE")
+	dbHost := getEnv("DB_HOST", "127.0.0.1")
+	dbPort := getEnv("DB_PORT", "3306")
+	dbUser := getEnv("DB_USERNAME", "root")
+	dbPass := getEnv("DB_PASSWORD", "")
+	dbName := getEnv("DB_DATABASE", "notifwa")
 
-	// Format DSN MySQL: user:password@tcp(host:port)/dbname
-	dsn := dbUser + ":" + dbPass + "@tcp(" + dbHost + ":" + dbPort + ")/" + dbName
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", dbUser, dbPass, dbHost, dbPort, dbName)
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -42,7 +36,6 @@ func InitDB() {
 	log.Println("Berhasil terkoneksi ke MySQL Database Laravel!")
 }
 
-// SetStatus mengupdate status device di tabel 'devices'
 func SetStatus(device string, status string) {
 	if DB == nil {
 		return
@@ -53,4 +46,11 @@ func SetStatus(device string, status string) {
 	} else {
 		log.Println("Status DB untuk", device, "diubah menjadi:", status)
 	}
+}
+
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

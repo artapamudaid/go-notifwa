@@ -1,0 +1,8 @@
+.env
+examplestore.db
+*.log
+.git
+.gitignore
+Dockerfile
+.dockerignore
+docker-compose.yml

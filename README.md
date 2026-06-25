@@ -3,51 +3,122 @@
 WhatsApp Gateway written in Go using [Fiber](https://gofiber.io/) and [Whatsmeow](https://pkg.go.dev/go.mau.fi/whatsmeow). This service is designed to be a high-performance backend, connecting with the Laravel backend.
 
 ## Requirements
+
 - Go 1.20+
-- MySQL Server
-
-## Setup
-1. Clone this repository.
-2. Copy `.env.example` to `.env` and adjust the database credentials.
-3. Install dependencies:
-   ```bash
-   go mod tidy
-   ```
-4. Run the server:
-   ```bash
-   go run main.go
-   ```
-
-The server will start at `http://localhost:3001` (or whatever is defined in your `.env` or main.go, defaults to `8088`).
+- MySQL / MariaDB Server (Laravel database)
+- SQLite (for WhatsApp session persistence, included via CGO)
 
 ---
 
-## High-Performance Worker Queue
-This gateway implements a **Multi-Worker Pool Queue**. 
-When the API receives a `POST` request to send a message, media, or poll, it does **not** block to wait for WhatsApp to send it. Instead, it places the job in a background channel and immediately returns an HTTP success response. 
+## Konfigurasi Database
 
-This allows you to send **blasts to thousands of numbers concurrently** without experiencing HTTP timeouts from your Laravel / PHP backend. The background workers will then process the queue safely, applying a random 1-5 second delay per message to prevent bans, while memory references are automatically cleared (Garbage Collected) after each send.
+Aplikasi membaca konfigurasi MySQL dari environment variable (prioritas utama) atau file `.env`.
+
+| Variable      | Default       | Keterangan                  |
+|---------------|---------------|-----------------------------|
+| `DB_HOST`     | `127.0.0.1`   | Host MySQL                  |
+| `DB_PORT`     | `3306`        | Port MySQL                  |
+| `DB_DATABASE` | `notifwa`     | Nama database               |
+| `DB_USERNAME` | `root`        | Username MySQL              |
+| `DB_PASSWORD` | _(kosong)_    | Password MySQL              |
+
+**Penting:** Jangan gunakan tanda kutip pada nilai di `.env`.
+```
+# BENAR
+DB_PASSWORD=mypass123
+
+# SALAH
+DB_PASSWORD='mypass123'
+```
+
+---
+
+## Local / Native Setup
+
+```bash
+# 1. Clone repository
+git clone <repo-url> && cd go-notifwa
+
+# 2. Copy dan sesuaikan konfigurasi
+cp .env.example .env
+nano .env
+
+# 3. Install dependencies
+go mod tidy
+
+# 4. Jalankan
+go run main.go
+```
+
+Server berjalan di `http://localhost:8088`.
 
 ---
 
 ## Docker Deployment
 
-You can also deploy this application using Docker.
-
-### 1. Build the Image
+### Build Image
 
 ```bash
 docker build -t go-notifwa .
 ```
 
-### 2. Run the Container
+### Skenario 1: MySQL di Host yang Sama (Bind 127.0.0.1)
 
-Make sure you have an `.env` file ready. Also, create an empty `examplestore.db` file to persist your WhatsApp sessions if you don't have one yet.
-
-> **Memory GC Optimization**: The Dockerfile automatically injects `ENV GOMEMLIMIT=250MiB` to optimize Go's Garbage Collector. This ensures that the worker queue aggressively clears old memory references, preventing memory leaks and keeping the container's RAM usage strictly below 250MB.
+Jika MySQL hanya listen di `127.0.0.1`, gunakan **host networking**:
 
 ```bash
+# Siapkan file session
 touch examplestore.db
+
+# Buat .env dengan DB_HOST=127.0.0.1
+cp .env.example .env
+
+# Jalankan dengan --network host
+docker run -d \
+  --name go-notifwa \
+  --network host \
+  -v $(pwd)/.env:/app/.env \
+  -v $(pwd)/examplestore.db:/app/examplestore.db \
+  --restart unless-stopped \
+  go-notifwa
+```
+
+> **Catatan:** `--network host` tidak memerlukan `-p` port mapping. Container langsung menggunakan network host.
+
+### Skenario 2: MySQL di Host yang Sama (Bind 0.0.0.0)
+
+Jika MySQL listen di semua interface (`bind-address = 0.0.0.0`), gunakan bridge networking:
+
+```bash
+# .env: DB_HOST=host.docker.internal
+cp .env.example .env
+sed -i 's/DB_HOST=.*/DB_HOST=host.docker.internal/' .env
+
+touch examplestore.db
+
+docker run -d \
+  --name go-notifwa \
+  -p 8088:8088 \
+  --add-host host.docker.internal:host-gateway \
+  -v $(pwd)/.env:/app/.env \
+  -v $(pwd)/examplestore.db:/app/examplestore.db \
+  --restart unless-stopped \
+  go-notifwa
+```
+
+### Skenario 3: MySQL di Server Remote
+
+Jika MySQL berada di server terpisah (misal `192.168.1.100`):
+
+```bash
+# .env: DB_HOST=192.168.1.100
+cp .env.example .env
+sed -i 's/DB_HOST=.*/DB_HOST=192.168.1.100/' .env
+sed -i 's/DB_USERNAME=.*/DB_USERNAME=myuser/' .env
+sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=mypassword/' .env
+
+touch examplestore.db
+
 docker run -d \
   --name go-notifwa \
   -p 8088:8088 \
@@ -57,63 +128,90 @@ docker run -d \
   go-notifwa
 ```
 
-> **Important note on Database Connection**: If your MySQL database is running on your host machine (not in Docker), the container cannot connect to it using `localhost` or `127.0.0.1` as `DB_HOST` in your `.env` file. You need to change `DB_HOST` to `host.docker.internal` in your `.env` file for the container to reach the host's database.
+### Skenario 4: Tanpa File .env (Environment Variables)
+
+Anda bisa melewatkan `.env` dan langsung inject environment variable:
+
+```bash
+touch examplestore.db
+
+docker run -d \
+  --name go-notifwa \
+  --network host \
+  -e DB_HOST=127.0.0.1 \
+  -e DB_PORT=3306 \
+  -e DB_DATABASE=notifwa \
+  -e DB_USERNAME=root \
+  -e DB_PASSWORD=mypassword \
+  -v $(pwd)/examplestore.db:/app/examplestore.db \
+  --restart unless-stopped \
+  go-notifwa
+```
+
+> **Memory GC Optimization**: Dockerfile mengatur `GOMEMLIMIT=250MiB` agar Go Garbage Collector optimal di container, menjaga RAM di bawah 250MB.
+
+---
+
+## High-Performance Worker Queue
+
+Gateway ini menggunakan **Multi-Worker Pool Queue**. Saat menerima request `POST` untuk mengirim pesan, request langsung dibalas HTTP success tanpa menunggu WhatsApp selesai mengirim. Job masuk ke background channel dan diproses worker.
+
+Cocok untuk **blast ribuan nomor** secara concurrent tanpa HTTP timeout dari Laravel backend. Worker menerapkan delay acak 1-5 detik per pesan untuk mencegah ban.
 
 ---
 
 ## API Documentation
 
-All endpoints expect data encoded as `application/x-www-form-urlencoded` or `application/json`.
+### 1. WebSocket — QR Scan & Status
+**Endpoint:** `WS /ws/connect/:device`
 
-### 1. Send Text Message
+Frontend connect untuk scan QR code. `:device` adalah session token.
+
+### 2. Send Text Message
 **Endpoint:** `POST /backend-send-text`
 
 | Parameter | Type   | Description |
 |-----------|--------|-------------|
-| `token`   | string | Session / Device token used for authentication. |
-| `number`  | string | Destination phone number (e.g. `0812xxx` or `62812xxx`) or Group JID. |
-| `text`    | string | The message content. |
+| `token`   | string | Session / Device token |
+| `number`  | string | Nomor tujuan (e.g. `0812xxx`, `62812xxx`) atau Group JID |
+| `text`    | string | Isi pesan |
 
-**Response (Success):**
+**Response:**
 ```json
-{
-  "status": true,
-  "message": "Message queued successfully"
-}
+{ "status": true, "message": "Message queued successfully" }
 ```
 
-### 2. Send Media Message
+### 3. Send Media Message
 **Endpoint:** `POST /backend-send-media`
 
 | Parameter  | Type   | Description |
 |------------|--------|-------------|
-| `token`    | string | Session / Device token. |
-| `number`   | string | Destination phone number or Group JID. |
-| `url`      | string | URL to download the media file. |
-| `type`     | string | Media type: `image`, `video`, `audio`, `document`. |
-| `caption`  | string | (Optional) Caption for image/video/document. |
-| `filename` | string | (Optional) Filename for document. |
+| `token`    | string | Session / Device token |
+| `number`   | string | Nomor tujuan atau Group JID |
+| `url`      | string | URL file media |
+| `type`     | string | `image`, `video`, `audio`, `document` |
+| `caption`  | string | (Optional) Caption |
+| `filename` | string | (Optional) Nama file untuk document |
 
-### 3. Send Poll Message
+### 4. Send Poll Message
 **Endpoint:** `POST /backend-send-poll`
 
 | Parameter   | Type    | Description |
 |-------------|---------|-------------|
-| `token`     | string  | Session / Device token. |
-| `number`    | string  | Destination phone number or Group JID. |
-| `name`      | string  | The title/question of the poll. |
-| `options`   | string  | JSON array string for poll options (e.g. `["Yes", "No"]`). |
-| `countable` | boolean | Set `1` or `true` if multiple selections are allowed. |
+| `token`     | string  | Session / Device token |
+| `number`    | string  | Nomor tujuan atau Group JID |
+| `name`      | string  | Judul/pertanyaan poll |
+| `options`   | string  | JSON array pilihan (e.g. `["Yes","No"]`) |
+| `countable` | boolean | `1` / `true` jika multi-select |
 
-### 4. Get Connected Groups
+### 5. Get Groups
 **Endpoint:** `POST /backend-getgroups`
 
 | Parameter | Type   | Description |
 |-----------|--------|-------------|
-| `token`   | string | Session / Device token. |
+| `token`   | string | Session / Device token |
 
-**Response (Success):**
-Returns a list of groups the device has joined.
+**Response:**
 ```json
 {
   "status": true,
@@ -122,16 +220,25 @@ Returns a list of groups the device has joined.
       "id": "12345678@g.us",
       "name": "My Group",
       "subject": "My Group",
-      "participants": [
-         { "id": "628xxx@s.whatsapp.net" }
-      ]
+      "participants": [{ "id": "628xxx@s.whatsapp.net" }]
     }
   ]
 }
 ```
 
-### 5. WebSocket Connection for QR & Status
-**Endpoint:** `WS /ws/connect/:device`
+### 6. Logout Device
+**Endpoint:** `POST /backend-logout`
 
-Used by the frontend to connect and scan the QR code.
-- `:device` represents the session token (e.g. `mydevice`).
+| Parameter | Type   | Description |
+|-----------|--------|-------------|
+| `token`   | string | Session / Device token |
+
+---
+
+## Troubleshooting
+
+| Error | Solusi |
+|-------|--------|
+| `connection refused` | Pastikan MySQL berjalan dan `DB_HOST` benar. Cek bind-address MySQL (`SHOW VARIABLES LIKE 'bind_address';`). |
+| `Access denied for user` | Cek username/password. Jangan pakai tanda kutip di `.env`. |
+| `Peringatan: Gagal load file .env` | Normal jika pakai `-e` flags tanpa `.env` mount. Gunakan environment variable langsung. |
