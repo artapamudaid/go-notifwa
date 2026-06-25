@@ -48,10 +48,12 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 				fmt.Println("Pesan baru:", v.Message.GetConversation())
 			case *events.Disconnected:
 				fmt.Printf("Device %s terputus dari WA\n", device)
-				database.SetStatus(device, "Disconnected")
+				delete(Clients, device)
 				if cb, ok := statusCallbacks[device]; ok {
 					cb()
 				}
+				delete(statusCallbacks, device)
+				database.SetStatus(device, "Disconnect")
 			case *events.LoggedOut:
 				fmt.Printf("Device %s logged out. Cleaning up memory...\n", device)
 				client.Disconnect()
@@ -60,7 +62,7 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 					cb()
 				}
 				delete(statusCallbacks, device)
-				database.SetStatus(device, "Disconnected")
+				database.SetStatus(device, "Disconnect")
 			}
 		})
 		Clients[device] = client
@@ -140,7 +142,7 @@ func LogoutDevice(device string) error {
 	client.Disconnect()
 	delete(Clients, device)
 	delete(statusCallbacks, device)
-	database.SetStatus(device, "Disconnected")
+	database.SetStatus(device, "Disconnect")
 
 	return nil
 }
