@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"sync"
+
 	"go-notifwa/database"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -14,9 +16,54 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
-var Clients = make(map[string]*whatsmeow.Client)
+// mu melindungi Clients dan statusCallbacks dari concurrent access (race condition).
+// Tanpa mutex ini, akses map dari banyak goroutine sekaligus bisa menyebabkan crash
+// atau (lebih berbahaya) membaca client yang salah → pesan terkirim ke nomor yang salah.
+var mu sync.RWMutex
+
+var clients = make(map[string]*whatsmeow.Client)
 var statusCallbacks = make(map[string]func())
 var DB *sqlstore.Container
+
+// GetClient mengambil client secara thread-safe.
+func GetClient(token string) (*whatsmeow.Client, bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	c, ok := clients[token]
+	return c, ok
+}
+
+// setClient menyimpan client secara thread-safe.
+func setClient(token string, c *whatsmeow.Client) {
+	mu.Lock()
+	defer mu.Unlock()
+	clients[token] = c
+}
+
+// deleteClient menghapus client secara thread-safe.
+func deleteClient(token string) {
+	mu.Lock()
+	defer mu.Unlock()
+	delete(clients, token)
+}
+
+// setCallback menyimpan callback secara thread-safe.
+func setCallback(token string, cb func()) {
+	mu.Lock()
+	defer mu.Unlock()
+	statusCallbacks[token] = cb
+}
+
+// getAndDeleteCallback mengambil lalu menghapus callback secara thread-safe (atomic).
+func getAndDeleteCallback(token string) (func(), bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	cb, ok := statusCallbacks[token]
+	if ok {
+		delete(statusCallbacks, token)
+	}
+	return cb, ok
+}
 
 func InitWhatsApp() {
 	dbLog := waLog.Stdout("Database", "DEBUG", true)
@@ -29,46 +76,53 @@ func InitWhatsApp() {
 
 func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallback func(), disconnectCallback func(), errorCallback func(string)) {
 	if disconnectCallback != nil {
-		statusCallbacks[device] = disconnectCallback
+		setCallback(device, disconnectCallback)
 	}
 
-	if Clients[device] == nil || (Clients[device] != nil && Clients[device].Store.ID == nil) {
-		if old, ok := Clients[device]; ok {
-			old.Disconnect()
-			delete(Clients, device)
+	existingClient, exists := GetClient(device)
+	if !exists || (exists && existingClient.Store.ID == nil) {
+		if exists {
+			existingClient.Disconnect()
+			deleteClient(device)
 		}
 
 		deviceStore := DB.NewDevice()
 		clientLog := waLog.Stdout("Client", "DEBUG", true)
 		client := whatsmeow.NewClient(deviceStore, clientLog)
 
+		// Salin `device` ke variabel lokal agar closure goroutine tidak
+		// mengakses variabel loop yang berubah (meski di sini hanya 1 nilai,
+		// ini adalah best-practice penting untuk mencegah closure capture bug).
+		localDevice := device
+
 		client.AddEventHandler(func(evt interface{}) {
 			switch v := evt.(type) {
 			case *events.Message:
 				fmt.Println("Pesan baru:", v.Message.GetConversation())
 			case *events.Disconnected:
-				fmt.Printf("Device %s terputus dari WA\n", device)
-				delete(Clients, device)
-				if cb, ok := statusCallbacks[device]; ok {
+				fmt.Printf("Device %s terputus dari WA\n", localDevice)
+				deleteClient(localDevice)
+				if cb, ok := getAndDeleteCallback(localDevice); ok {
 					cb()
 				}
-				delete(statusCallbacks, device)
-				database.SetStatus(device, "Disconnect")
+				database.SetStatus(localDevice, "Disconnect")
 			case *events.LoggedOut:
-				fmt.Printf("Device %s logged out. Cleaning up memory...\n", device)
-				client.Disconnect()
-				delete(Clients, device)
-				if cb, ok := statusCallbacks[device]; ok {
+				fmt.Printf("Device %s logged out. Cleaning up memory...\n", localDevice)
+				// Ambil client dari map secara aman sebelum disconnect
+				if c, ok := GetClient(localDevice); ok {
+					c.Disconnect()
+				}
+				deleteClient(localDevice)
+				if cb, ok := getAndDeleteCallback(localDevice); ok {
 					cb()
 				}
-				delete(statusCallbacks, device)
-				database.SetStatus(device, "Disconnect")
+				database.SetStatus(localDevice, "Disconnect")
 			}
 		})
-		Clients[device] = client
+		setClient(device, client)
 	}
 
-	client := Clients[device]
+	client, _ := GetClient(device)
 
 	// Jika device belum login, akan menghasilkan QR Code
 	if client.Store.ID == nil {
@@ -126,7 +180,7 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 }
 
 func LogoutDevice(device string) error {
-	client, exists := Clients[device]
+	client, exists := GetClient(device)
 	if !exists {
 		return fmt.Errorf("device %s tidak ditemukan", device)
 	}
@@ -140,8 +194,8 @@ func LogoutDevice(device string) error {
 	}
 
 	client.Disconnect()
-	delete(Clients, device)
-	delete(statusCallbacks, device)
+	deleteClient(device)
+	getAndDeleteCallback(device) // bersihkan callback juga
 	database.SetStatus(device, "Disconnect")
 
 	return nil

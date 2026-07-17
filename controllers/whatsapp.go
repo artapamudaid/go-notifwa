@@ -53,7 +53,7 @@ func SendText(c *fiber.Ctx) error {
 		})
 	}
 
-	client, exists := whatsapp.Clients[req.Token]
+	client, exists := whatsapp.GetClient(req.Token)
 	if !exists || !client.IsConnected() {
 		return c.JSON(fiber.Map{
 			"status":  false,
@@ -94,7 +94,7 @@ func SendMedia(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": false, "message": "Token, number, and url are required"})
 	}
 
-	client, exists := whatsapp.Clients[req.Token]
+	client, exists := whatsapp.GetClient(req.Token)
 	if !exists || !client.IsConnected() {
 		return c.JSON(fiber.Map{"status": false, "message": "Check your whatsapp connection"})
 	}
@@ -212,7 +212,7 @@ func GetGroups(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": false, "message": "Token is required"})
 	}
 
-	client, exists := whatsapp.Clients[req.Token]
+	client, exists := whatsapp.GetClient(req.Token)
 	if !exists || !client.IsConnected() {
 		return c.JSON(fiber.Map{"status": false, "message": "Check your whatsapp connection"})
 	}
@@ -258,7 +258,7 @@ func SendPoll(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": false, "message": "Token, number, and name are required"})
 	}
 
-	client, exists := whatsapp.Clients[req.Token]
+	client, exists := whatsapp.GetClient(req.Token)
 	if !exists || !client.IsConnected() {
 		return c.JSON(fiber.Map{"status": false, "message": "Check your whatsapp connection"})
 	}

@@ -15,7 +15,7 @@ WhatsApp Gateway written in Go using [Fiber](https://gofiber.io/) and [Whatsmeow
 Aplikasi membaca konfigurasi MySQL dari environment variable (prioritas utama) atau file `.env`.
 
 | Variable      | Default       | Keterangan                  |
-|---------------|---------------|-----------------------------|
+|---------------|---------------|------------------------------|
 | `DB_HOST`     | `127.0.0.1`   | Host MySQL                  |
 | `DB_PORT`     | `3306`        | Port MySQL                  |
 | `DB_DATABASE` | `notifwa`     | Nama database               |
@@ -158,6 +158,81 @@ Gateway ini menggunakan **Multi-Worker Pool Queue**. Saat menerima request `POST
 
 Cocok untuk **blast ribuan nomor** secara concurrent tanpa HTTP timeout dari Laravel backend. Worker menerapkan delay acak 1-5 detik per pesan untuk mencegah ban.
 
+### Arsitektur Queue
+
+```
+HTTP Request (Fiber)
+      │
+      ▼
+  Controller
+  - Parse request
+  - Lookup client via GetClient() [thread-safe]
+  - Push SendJob ke channel
+      │
+      ▼
+  JobQueue (chan, buffer 10000)
+      │
+  ┌───┴────────────────────┐
+  ▼           ▼            ▼
+Worker 1   Worker 2  ... Worker N
+  │           │
+  ▼           ▼
+SendMessage() SendMessage()
+(whatsmeow — thread-safe)
+```
+
+Setiap `SendJob` membawa nilai **lengkap** (Client, TargetJID, Message) — bukan pointer ke variabel yang bisa berubah — sehingga tidak ada risiko salah kirim antar request.
+
+---
+
+## Keamanan Konkurensi (Thread Safety)
+
+> **Penting untuk deployment multi-tenant / blast banyak nomor sekaligus.**
+
+### Masalah Umum: Salah Kirim ke Nomor Lain
+
+Saat mengirim ke banyak nomor secara bersamaan (concurrent requests), masalah **salah kirim** bisa terjadi jika:
+
+1. **Map `Clients` diakses tanpa mutex** — Go map tidak thread-safe. Jika 2 goroutine membaca/menulis map bersamaan, hasilnya tidak terdefinisi (undefined behavior), bisa crash atau membaca client yang salah.
+2. **Variabel loop di-capture oleh closure** — Goroutine yang menangkap referensi variabel loop akan membaca nilai terakhir dari variabel tersebut, bukan nilai saat goroutine dibuat.
+
+### Solusi yang Diterapkan
+
+Kode ini menggunakan `sync.RWMutex` untuk melindungi semua akses ke map `clients` dan `statusCallbacks`:
+
+```go
+// LAMA — BERBAHAYA ❌ (data race)
+var Clients = make(map[string]*whatsmeow.Client)
+client := Clients[token]  // tidak aman dari goroutine lain
+
+// BARU — AMAN ✅ (protected by RWMutex)
+client, exists := whatsapp.GetClient(token)  // thread-safe
+```
+
+| Fungsi | Tipe Lock | Keterangan |
+|---|---|---|
+| `GetClient()` | `RLock` (read lock) | Banyak reader bisa berjalan bersamaan |
+| `setClient()` | `Lock` (write lock) | Exclusive, blokir semua reader/writer |
+| `deleteClient()` | `Lock` (write lock) | Exclusive |
+| `getAndDeleteCallback()` | `Lock` (write lock) | Atomic get+delete, cegah double-fire |
+
+### Mendeteksi Race Condition
+
+Gunakan Go race detector saat development:
+
+```bash
+go run -race main.go
+```
+
+Jika ada data race, output akan muncul seperti:
+```
+WARNING: DATA RACE
+Write at 0x... by goroutine N:
+  go-notifwa/whatsapp.setClient(...)
+Read at 0x... by goroutine M:
+  go-notifwa/controllers.SendText(...)
+```
+
 ---
 
 ## API Documentation
@@ -242,3 +317,6 @@ Frontend connect untuk scan QR code. `:device` adalah session token.
 | `connection refused` | Pastikan MySQL berjalan dan `DB_HOST` benar. Cek bind-address MySQL (`SHOW VARIABLES LIKE 'bind_address';`). |
 | `Access denied for user` | Cek username/password. Jangan pakai tanda kutip di `.env`. |
 | `Peringatan: Gagal load file .env` | Normal jika pakai `-e` flags tanpa `.env` mount. Gunakan environment variable langsung. |
+| Pesan terkirim ke nomor yang salah | Pastikan versi terbaru digunakan. Versi lama memiliki bug race condition pada map `Clients` yang tidak dilindungi mutex. Jalankan `go run -race main.go` untuk verifikasi. |
+| `WARNING: DATA RACE` saat `-race` flag | Update ke versi terbaru. Race condition sudah diperbaiki dengan `sync.RWMutex` di `whatsapp/whatsapp.go`. |
+| `fatal error: concurrent map read and map write` | Sama seperti di atas — upgrade ke versi terbaru. |

@@ -1,39 +1,58 @@
-FROM golang:alpine AS builder
+# ─────────────────────────────────────────────────────────
+# Stage 1 — Builder
+# Gunakan golang:bookworm (Debian) bukan alpine agar CGO
+# (go-sqlite3) bisa di-compile dengan gcc penuh tanpa masalah
+# musl/glibc mismatch.
+# ─────────────────────────────────────────────────────────
+FROM golang:1.25-bookworm AS builder
 
-# Set the Current Working Directory inside the container
 WORKDIR /app
 
-# Install gcc and other build dependencies for CGO (required by go-sqlite3 used in whatsmeow)
-RUN apk add --no-cache gcc g++ musl-dev
+# Install gcc & build tools (sudah tersedia di bookworm, tapi
+# pastikan sqlite3 dev headers ada)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libc6-dev \
+    libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy go mod and sum files
+# Copy dependency files dulu (layer cache)
 COPY go.mod go.sum ./
-
-# Download all dependencies. Dependencies will be cached if the go.mod and go.sum files are not changed
 RUN go mod download
 
-# Copy the source from the current directory to the Working Directory inside the container
+# Copy semua source code
 COPY . .
 
-# Build the Go app with CGO enabled
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o main .
+# Pastikan go.sum sinkron di dalam container
+RUN go mod tidy
 
-# Start a new stage from scratch
-FROM alpine:latest  
+# Build dengan CGO enabled
+# Tidak pakai -a dan -installsuffix cgo karena tidak diperlukan
+# di lingkungan Debian yang sudah punya glibc native
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o main .
 
-# Install certificates and tzdata
-RUN apk --no-cache add ca-certificates tzdata
+# ─────────────────────────────────────────────────────────
+# Stage 2 — Runtime
+# Gunakan debian:bookworm-slim agar binary glibc-linked bisa
+# berjalan (tidak bisa pakai alpine karena binary butuh glibc)
+# ─────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+# Install runtime deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    tzdata \
+    libsqlite3-0 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy the Pre-built binary file from the previous stage
+# Copy binary dari builder stage
 COPY --from=builder /app/main .
 
-# Optimize Go Garbage Collection for Container (Limit 250 MB)
+# Optimize Go Garbage Collection untuk container (limit 250 MB)
 ENV GOMEMLIMIT=250MiB
 
-# Expose port 8088 to the outside world
 EXPOSE 8088
 
-# Command to run the executable
 CMD ["./main"]

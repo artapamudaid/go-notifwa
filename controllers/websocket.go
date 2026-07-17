@@ -35,7 +35,7 @@ func WsConnect(c *websocket.Conn) {
 
 	// Callback ketika sukses login (koneksi terbuka)
 	successCallback := func() {
-		client := whatsapp.Clients[device]
+		client, _ := whatsapp.GetClient(device)
 
 		name := "User"
 		id := device
