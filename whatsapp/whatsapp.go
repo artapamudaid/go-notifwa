@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"fmt"
 	"sync"
@@ -11,7 +12,9 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
@@ -24,6 +27,7 @@ var mu sync.RWMutex
 var clients = make(map[string]*whatsmeow.Client)
 var statusCallbacks = make(map[string]func())
 var DB *sqlstore.Container
+var mappingDB *sql.DB
 
 // GetClient mengambil client secara thread-safe.
 func GetClient(token string) (*whatsmeow.Client, bool) {
@@ -72,6 +76,124 @@ func InitWhatsApp() {
 		panic(err)
 	}
 	DB = container
+
+	mappingDB, err = sql.Open("sqlite3", "file:examplestore.db?_foreign_keys=on")
+	if err != nil {
+		panic(err)
+	}
+	mappingDB.SetMaxOpenConns(1)
+
+	_, err = mappingDB.ExecContext(context.Background(),
+		`CREATE TABLE IF NOT EXISTS token_jid_mapping (
+			token TEXT PRIMARY KEY,
+			jid TEXT NOT NULL
+		)`)
+	if err != nil {
+		panic(err)
+	}
+
+	restoreSessions()
+}
+
+func saveTokenJIDMapping(token string, jid types.JID) {
+	if mappingDB == nil {
+		return
+	}
+	mappingDB.ExecContext(context.Background(),
+		`INSERT OR REPLACE INTO token_jid_mapping (token, jid) VALUES ($1, $2)`,
+		token, jid.String())
+}
+
+func deleteTokenJIDMapping(token string) {
+	if mappingDB == nil {
+		return
+	}
+	mappingDB.ExecContext(context.Background(),
+		`DELETE FROM token_jid_mapping WHERE token=$1`, token)
+}
+
+func getJIDForToken(token string) (string, error) {
+	var jidStr string
+	err := mappingDB.QueryRowContext(context.Background(),
+		`SELECT jid FROM token_jid_mapping WHERE token=$1`, token).Scan(&jidStr)
+	if err != nil {
+		// Also check the whatsmeow_device table directly for single-device case
+		devs, _ := DB.GetAllDevices(context.Background())
+		if len(devs) == 1 && devs[0].ID != nil {
+			return devs[0].ID.String(), nil
+		}
+		return "", err
+	}
+	return jidStr, nil
+}
+
+func restoreSessions() {
+	ctx := context.Background()
+	rows, err := mappingDB.QueryContext(ctx, `SELECT token, jid FROM token_jid_mapping`)
+	if err != nil {
+		fmt.Println("restoreSessions: failed to query mappings:", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var token, jidStr string
+		if err := rows.Scan(&token, &jidStr); err != nil {
+			continue
+		}
+		jid, err := types.ParseJID(jidStr)
+		if err != nil {
+			continue
+		}
+		device, err := DB.GetDevice(ctx, jid)
+		if err != nil || device == nil {
+			deleteTokenJIDMapping(token)
+			continue
+		}
+
+		clientLog := waLog.Stdout("Client", "DEBUG", true)
+		client := whatsmeow.NewClient(device, clientLog)
+		attachEventHandlers(client, token)
+
+		setClient(token, client)
+
+		go func(t string, c *whatsmeow.Client) {
+			err := c.Connect()
+			if err != nil {
+				fmt.Printf("restoreSessions: reconnect failed for %s: %v\n", t, err)
+				return
+			}
+			database.SetStatus(t, "Connected")
+			fmt.Printf("restoreSessions: device %s reconnected\n", t)
+		}(token, client)
+	}
+}
+
+func attachEventHandlers(client *whatsmeow.Client, localDevice string) {
+	client.AddEventHandler(func(evt interface{}) {
+		switch v := evt.(type) {
+		case *events.Message:
+			fmt.Println("Pesan baru:", v.Message.GetConversation())
+		case *events.Disconnected:
+			fmt.Printf("Device %s terputus dari WA\n", localDevice)
+			deleteClient(localDevice)
+			if cb, ok := getAndDeleteCallback(localDevice); ok {
+				cb()
+			}
+			database.SetStatus(localDevice, "Disconnect")
+		case *events.LoggedOut:
+			fmt.Printf("Device %s logged out. Cleaning up memory...\n", localDevice)
+			if c, ok := GetClient(localDevice); ok {
+				c.Disconnect()
+			}
+			deleteClient(localDevice)
+			deleteTokenJIDMapping(localDevice)
+			if cb, ok := getAndDeleteCallback(localDevice); ok {
+				cb()
+			}
+			database.SetStatus(localDevice, "Disconnect")
+		}
+	})
 }
 
 func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallback func(), disconnectCallback func(), errorCallback func(string)) {
@@ -86,45 +208,35 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 			deleteClient(device)
 		}
 
-		deviceStore := DB.NewDevice()
+		var deviceStore *store.Device
+
+		jidStr, err := getJIDForToken(device)
+		if err == nil {
+			jid, parseErr := types.ParseJID(jidStr)
+			if parseErr == nil {
+				existingDevice, devErr := DB.GetDevice(context.Background(), jid)
+				if devErr == nil && existingDevice != nil {
+					deviceStore = existingDevice
+					fmt.Printf("ConnectDevice: found existing session for %s (JID: %s)\n", device, jidStr)
+				}
+			}
+		}
+
+		if deviceStore == nil {
+			deviceStore = DB.NewDevice()
+		}
+
 		clientLog := waLog.Stdout("Client", "DEBUG", true)
 		client := whatsmeow.NewClient(deviceStore, clientLog)
 
-		// Salin `device` ke variabel lokal agar closure goroutine tidak
-		// mengakses variabel loop yang berubah (meski di sini hanya 1 nilai,
-		// ini adalah best-practice penting untuk mencegah closure capture bug).
 		localDevice := device
+		attachEventHandlers(client, localDevice)
 
-		client.AddEventHandler(func(evt interface{}) {
-			switch v := evt.(type) {
-			case *events.Message:
-				fmt.Println("Pesan baru:", v.Message.GetConversation())
-			case *events.Disconnected:
-				fmt.Printf("Device %s terputus dari WA\n", localDevice)
-				deleteClient(localDevice)
-				if cb, ok := getAndDeleteCallback(localDevice); ok {
-					cb()
-				}
-				database.SetStatus(localDevice, "Disconnect")
-			case *events.LoggedOut:
-				fmt.Printf("Device %s logged out. Cleaning up memory...\n", localDevice)
-				// Ambil client dari map secara aman sebelum disconnect
-				if c, ok := GetClient(localDevice); ok {
-					c.Disconnect()
-				}
-				deleteClient(localDevice)
-				if cb, ok := getAndDeleteCallback(localDevice); ok {
-					cb()
-				}
-				database.SetStatus(localDevice, "Disconnect")
-			}
-		})
 		setClient(device, client)
 	}
 
 	client, _ := GetClient(device)
 
-	// Jika device belum login, akan menghasilkan QR Code
 	if client.Store.ID == nil {
 		if client.IsConnected() {
 			client.Disconnect()
@@ -143,7 +255,6 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 			for evt := range qrChan {
 				if evt.Event == "code" {
 					fmt.Println("QR Baru diterima dari WA server")
-					// Generate PNG Base64
 					png, err := qrcode.Encode(evt.Code, qrcode.Medium, 256)
 					if err == nil {
 						base64Image := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
@@ -151,7 +262,10 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 					}
 				} else if evt.Event == "success" {
 					fmt.Println("Scan berhasil! Memanggil successCallback...")
-					database.SetStatus(device, "Connected") // <-- UPDATE DB
+					if client.Store != nil && client.Store.ID != nil {
+						saveTokenJIDMapping(device, *client.Store.ID)
+					}
+					database.SetStatus(device, "Connected")
 					successCallback()
 				} else if evt.Event == "timeout" {
 					fmt.Println("Scan QR Timeout...")
@@ -159,7 +273,6 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 			}
 		}()
 	} else {
-		// Jika sudah login sebelumnya, cek apakah sudah connect
 		if !client.IsConnected() {
 			err := client.Connect()
 			if err == nil {
@@ -172,7 +285,6 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 				}
 			}
 		} else {
-			// Jika sudah connect, langsung panggil success
 			database.SetStatus(device, "Connected")
 			successCallback()
 		}
@@ -195,7 +307,8 @@ func LogoutDevice(device string) error {
 
 	client.Disconnect()
 	deleteClient(device)
-	getAndDeleteCallback(device) // bersihkan callback juga
+	deleteTokenJIDMapping(device)
+	getAndDeleteCallback(device)
 	database.SetStatus(device, "Disconnect")
 
 	return nil
