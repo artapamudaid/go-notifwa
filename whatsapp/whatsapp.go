@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"sync"
+	"time"
 
 	"go-notifwa/database"
 
@@ -26,6 +27,7 @@ var mu sync.RWMutex
 
 var clients = make(map[string]*whatsmeow.Client)
 var statusCallbacks = make(map[string]func())
+var reconnecting sync.Map
 var DB *sqlstore.Container
 var mappingDB *sql.DB
 
@@ -117,11 +119,6 @@ func getJIDForToken(token string) (string, error) {
 	err := mappingDB.QueryRowContext(context.Background(),
 		`SELECT jid FROM token_jid_mapping WHERE token=$1`, token).Scan(&jidStr)
 	if err != nil {
-		// Also check the whatsmeow_device table directly for single-device case
-		devs, _ := DB.GetAllDevices(context.Background())
-		if len(devs) == 1 && devs[0].ID != nil {
-			return devs[0].ID.String(), nil
-		}
 		return "", err
 	}
 	return jidStr, nil
@@ -161,6 +158,7 @@ func restoreSessions() {
 			err := c.Connect()
 			if err != nil {
 				fmt.Printf("restoreSessions: reconnect failed for %s: %v\n", t, err)
+				go autoReconnect(t)
 				return
 			}
 			database.SetStatus(t, "Connected")
@@ -175,12 +173,12 @@ func attachEventHandlers(client *whatsmeow.Client, localDevice string) {
 		case *events.Message:
 			fmt.Println("Pesan baru:", v.Message.GetConversation())
 		case *events.Disconnected:
-			fmt.Printf("Device %s terputus dari WA\n", localDevice)
-			deleteClient(localDevice)
+			fmt.Printf("Device %s terputus dari WA, memulai auto-reconnect...\n", localDevice)
+			database.SetStatus(localDevice, "Disconnect")
 			if cb, ok := getAndDeleteCallback(localDevice); ok {
 				cb()
 			}
-			database.SetStatus(localDevice, "Disconnect")
+			go autoReconnect(localDevice)
 		case *events.LoggedOut:
 			fmt.Printf("Device %s logged out. Cleaning up memory...\n", localDevice)
 			if c, ok := GetClient(localDevice); ok {
@@ -188,12 +186,85 @@ func attachEventHandlers(client *whatsmeow.Client, localDevice string) {
 			}
 			deleteClient(localDevice)
 			deleteTokenJIDMapping(localDevice)
+			reconnecting.Delete(localDevice)
 			if cb, ok := getAndDeleteCallback(localDevice); ok {
 				cb()
 			}
 			database.SetStatus(localDevice, "Disconnect")
 		}
 	})
+}
+
+func autoReconnect(device string) {
+	if _, loaded := reconnecting.LoadOrStore(device, true); loaded {
+		fmt.Printf("Device %s sudah dalam proses reconnect, skip\n", device)
+		return
+	}
+	defer reconnecting.Delete(device)
+
+	jidStr, err := getJIDForToken(device)
+	if err != nil {
+		fmt.Printf("Device %s: tidak ditemukan JID, hentikan reconnect\n", device)
+		return
+	}
+
+	jid, err := types.ParseJID(jidStr)
+	if err != nil {
+		fmt.Printf("Device %s: JID invalid, hentikan reconnect\n", device)
+		return
+	}
+
+	maxRetries := 6
+	baseDelay := 5 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if _, ok := GetClient(device); !ok {
+			fmt.Printf("Device %s sudah dihapus dari memori, hentikan reconnect\n", device)
+			return
+		}
+
+		currentClient, _ := GetClient(device)
+		if currentClient != nil && currentClient.IsConnected() {
+			fmt.Printf("Device %s sudah terhubung kembali\n", device)
+			database.SetStatus(device, "Connected")
+			return
+		}
+
+		delay := baseDelay * time.Duration(1<<(attempt-1))
+		fmt.Printf("Device %s: reconnect attempt %d/%d, menunggu %v...\n", device, attempt, maxRetries, delay)
+		time.Sleep(delay)
+
+		dev, devErr := DB.GetDevice(context.Background(), jid)
+		if devErr != nil || dev == nil {
+			fmt.Printf("Device %s: gagal load device dari DB: %v\n", device, devErr)
+			continue
+		}
+
+		clientLog := waLog.Stdout("Client", "DEBUG", true)
+		newClient := whatsmeow.NewClient(dev, clientLog)
+		attachEventHandlers(newClient, device)
+
+		if err := newClient.Connect(); err != nil {
+			fmt.Printf("Device %s: reconnect attempt %d gagal: %v\n", device, attempt, err)
+			continue
+		}
+
+		if oldClient, ok := GetClient(device); ok {
+			oldClient.Disconnect()
+		}
+		setClient(device, newClient)
+
+		fmt.Printf("Device %s berhasil reconnect pada attempt %d\n", device, attempt)
+		database.SetStatus(device, "Connected")
+		return
+	}
+
+	fmt.Printf("Device %s gagal reconnect setelah %d attempt, menghentikan client\n", device, maxRetries)
+	if c, ok := GetClient(device); ok {
+		c.Disconnect()
+	}
+	deleteClient(device)
+	database.SetStatus(device, "Disconnect")
 }
 
 func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallback func(), disconnectCallback func(), errorCallback func(string)) {
