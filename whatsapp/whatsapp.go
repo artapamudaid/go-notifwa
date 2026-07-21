@@ -214,14 +214,18 @@ func autoReconnect(device string) {
 		return
 	}
 
+	if oldClient, ok := GetClient(device); ok {
+		oldClient.Disconnect()
+	}
+	deleteClient(device)
+
 	maxRetries := 6
 	baseDelay := 5 * time.Second
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		if _, ok := GetClient(device); !ok {
-			fmt.Printf("Device %s sudah dihapus dari memori, hentikan reconnect\n", device)
-			return
-		}
+		delay := baseDelay * time.Duration(1<<(attempt-1))
+		fmt.Printf("Device %s: reconnect attempt %d/%d, menunggu %v...\n", device, attempt, maxRetries, delay)
+		time.Sleep(delay)
 
 		currentClient, _ := GetClient(device)
 		if currentClient != nil && currentClient.IsConnected() {
@@ -229,10 +233,6 @@ func autoReconnect(device string) {
 			database.SetStatus(device, "Connected")
 			return
 		}
-
-		delay := baseDelay * time.Duration(1<<(attempt-1))
-		fmt.Printf("Device %s: reconnect attempt %d/%d, menunggu %v...\n", device, attempt, maxRetries, delay)
-		time.Sleep(delay)
 
 		dev, devErr := DB.GetDevice(context.Background(), jid)
 		if devErr != nil || dev == nil {
@@ -249,9 +249,6 @@ func autoReconnect(device string) {
 			continue
 		}
 
-		if oldClient, ok := GetClient(device); ok {
-			oldClient.Disconnect()
-		}
 		setClient(device, newClient)
 
 		fmt.Printf("Device %s berhasil reconnect pada attempt %d\n", device, attempt)
@@ -259,10 +256,7 @@ func autoReconnect(device string) {
 		return
 	}
 
-	fmt.Printf("Device %s gagal reconnect setelah %d attempt, menghentikan client\n", device, maxRetries)
-	if c, ok := GetClient(device); ok {
-		c.Disconnect()
-	}
+	fmt.Printf("Device %s gagal reconnect setelah %d attempt\n", device, maxRetries)
 	deleteClient(device)
 	database.SetStatus(device, "Disconnect")
 }
@@ -270,6 +264,16 @@ func autoReconnect(device string) {
 func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallback func(), disconnectCallback func(), errorCallback func(string)) {
 	if disconnectCallback != nil {
 		setCallback(device, disconnectCallback)
+	}
+
+	if _, isReconnecting := reconnecting.Load(device); isReconnecting {
+		time.Sleep(2 * time.Second)
+		if _, stillReconnecting := reconnecting.Load(device); stillReconnecting {
+			if errorCallback != nil {
+				errorCallback("Device is currently reconnecting, please try again")
+			}
+			return
+		}
 	}
 
 	existingClient, exists := GetClient(device)
@@ -344,6 +348,19 @@ func ConnectDevice(device string, qrCallback func(qrBase64 string), successCallb
 			}
 		}()
 	} else {
+		expectedJID, mappingErr := getJIDForToken(device)
+		actualJID := client.Store.ID.String()
+		if mappingErr == nil && expectedJID != actualJID {
+			fmt.Printf("Device %s: JID mismatch! expected=%s actual=%s, removing stale client\n", device, expectedJID, actualJID)
+			client.Disconnect()
+			deleteClient(device)
+			deleteTokenJIDMapping(device)
+			if errorCallback != nil {
+				errorCallback("Session mismatch, please scan QR again")
+			}
+			return
+		}
+
 		if !client.IsConnected() {
 			err := client.Connect()
 			if err == nil {
