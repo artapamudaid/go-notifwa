@@ -1,8 +1,12 @@
 package controllers
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log"
+	"os"
 
 	"go-notifwa/whatsapp"
 
@@ -20,6 +24,22 @@ type WsResponse struct {
 
 func WsConnect(c *websocket.Conn) {
 	device := c.Params("device")
+	signature := c.Query("signature")
+
+	// Validate HMAC Signature
+	secretToken := os.Getenv("WA_SECRET_TOKEN")
+	if secretToken != "" {
+		h := hmac.New(sha256.New, []byte(secretToken))
+		h.Write([]byte(device))
+		expectedSignature := hex.EncodeToString(h.Sum(nil))
+
+		if signature != expectedSignature {
+			log.Println("Koneksi WebSocket ditolak: Invalid signature untuk device", device)
+			c.Close()
+			return
+		}
+	}
+
 	log.Println("Frontend Laravel terhubung ke WebSocket untuk device:", device)
 
 	// Callback ketika QR Code baru digenerate oleh Whatsmeow
