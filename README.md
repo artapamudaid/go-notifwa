@@ -150,6 +150,17 @@ docker run -d \
 
 > **Memory GC Optimization**: Dockerfile mengatur `GOMEMLIMIT=250MiB` agar Go Garbage Collector optimal di container, menjaga RAM di bawah 250MB.
 
+### Hard Reset (Memaksa Semua User Scan Ulang)
+
+Jika Anda perlu membersihkan semua *session* WhatsApp secara permanen dan memaksa semua user untuk melakukan *scan* ulang (misal untuk memperbaiki masalah integrasi atau token), Anda cukup menghapus file `examplestore.db`:
+
+1. Hentikan aplikasi Go atau container Docker Anda.
+2. Hapus file database SQLite:
+   ```bash
+   rm examplestore.db
+   ```
+3. Jalankan kembali aplikasi/container. Sistem akan otomatis membuat database kosong yang baru dan status semua perangkat akan ter-reset. Semua user akan diminta untuk *scan* ulang QR code.
+
 ---
 
 ## High-Performance Worker Queue
