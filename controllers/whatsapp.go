@@ -11,7 +11,6 @@ import (
 
 	"go-notifwa/models"
 	"go-notifwa/whatsapp"
-	"go-notifwa/worker"
 
 	"github.com/gofiber/fiber/v2"
 	"go.mau.fi/whatsmeow"
@@ -71,17 +70,17 @@ func SendText(c *fiber.Ctx) error {
 		Conversation: proto.String(finalText),
 	}
 
-	worker.JobQueue <- worker.SendJob{
-		Client:    client,
-		TargetJID: targetJID,
-		Message:   msg,
-		Type:      "Text",
-		Token:     req.Token,
+	_, err := client.SendMessage(context.Background(), targetJID, msg)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"status":  false,
+			"message": "Failed to send message: " + err.Error(),
+		})
 	}
 
 	return c.JSON(fiber.Map{
 		"status":  true,
-		"message": "Message queued successfully",
+		"message": "Message sent successfully",
 	})
 }
 
@@ -190,17 +189,17 @@ func SendMedia(c *fiber.Ctx) error {
 
 	targetJID := parseJID(req.Number)
 
-	worker.JobQueue <- worker.SendJob{
-		Client:    client,
-		TargetJID: targetJID,
-		Message:   msg,
-		Type:      "Media",
-		Token:     req.Token,
+	_, err = client.SendMessage(context.Background(), targetJID, msg)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"status":  false,
+			"message": "Failed to send media: " + err.Error(),
+		})
 	}
 
 	return c.JSON(fiber.Map{
 		"status":  true,
-		"message": "Media queued successfully",
+		"message": "Media sent successfully",
 	})
 }
 
@@ -279,17 +278,17 @@ func SendPoll(c *fiber.Ctx) error {
 
 	msg := client.BuildPollCreation(req.Name, options, maxSelections)
 
-	worker.JobQueue <- worker.SendJob{
-		Client:    client,
-		TargetJID: targetJID,
-		Message:   msg,
-		Type:      "Poll",
-		Token:     req.Token,
+	_, err := client.SendMessage(context.Background(), targetJID, msg)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"status":  false,
+			"message": "Failed to send poll: " + err.Error(),
+		})
 	}
 
 	return c.JSON(fiber.Map{
 		"status":  true,
-		"message": "Poll queued successfully",
+		"message": "Poll sent successfully",
 	})
 }
 
