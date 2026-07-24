@@ -20,10 +20,12 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
-// mu melindungi Clients dan statusCallbacks dari concurrent access (race condition).
-// Tanpa mutex ini, akses map dari banyak goroutine sekaligus bisa menyebabkan crash
-// atau (lebih berbahaya) membaca client yang salah → pesan terkirim ke nomor yang salah.
-var mu sync.RWMutex
+// clientsMu melindungi map clients dari concurrent access (race condition).
+var clientsMu sync.RWMutex
+
+// cbMu melindungi map statusCallbacks dari concurrent access.
+// Dipisah dari clientsMu agar operasi callback tidak memblokir lookup client.
+var cbMu sync.Mutex
 
 var clients = make(map[string]*whatsmeow.Client)
 var statusCallbacks = make(map[string]func())
@@ -33,37 +35,37 @@ var mappingDB *sql.DB
 
 // GetClient mengambil client secara thread-safe.
 func GetClient(token string) (*whatsmeow.Client, bool) {
-	mu.RLock()
-	defer mu.RUnlock()
+	clientsMu.RLock()
+	defer clientsMu.RUnlock()
 	c, ok := clients[token]
 	return c, ok
 }
 
 // setClient menyimpan client secara thread-safe.
 func setClient(token string, c *whatsmeow.Client) {
-	mu.Lock()
-	defer mu.Unlock()
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
 	clients[token] = c
 }
 
 // deleteClient menghapus client secara thread-safe.
 func deleteClient(token string) {
-	mu.Lock()
-	defer mu.Unlock()
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
 	delete(clients, token)
 }
 
 // setCallback menyimpan callback secara thread-safe.
 func setCallback(token string, cb func()) {
-	mu.Lock()
-	defer mu.Unlock()
+	cbMu.Lock()
+	defer cbMu.Unlock()
 	statusCallbacks[token] = cb
 }
 
 // getAndDeleteCallback mengambil lalu menghapus callback secara thread-safe (atomic).
 func getAndDeleteCallback(token string) (func(), bool) {
-	mu.Lock()
-	defer mu.Unlock()
+	cbMu.Lock()
+	defer cbMu.Unlock()
 	cb, ok := statusCallbacks[token]
 	if ok {
 		delete(statusCallbacks, token)

@@ -76,6 +76,7 @@ func SendText(c *fiber.Ctx) error {
 		TargetJID: targetJID,
 		Message:   msg,
 		Type:      "Text",
+		Token:     req.Token,
 	}
 
 	return c.JSON(fiber.Map{
@@ -194,6 +195,7 @@ func SendMedia(c *fiber.Ctx) error {
 		TargetJID: targetJID,
 		Message:   msg,
 		Type:      "Media",
+		Token:     req.Token,
 	}
 
 	return c.JSON(fiber.Map{
@@ -282,6 +284,7 @@ func SendPoll(c *fiber.Ctx) error {
 		TargetJID: targetJID,
 		Message:   msg,
 		Type:      "Poll",
+		Token:     req.Token,
 	}
 
 	return c.JSON(fiber.Map{

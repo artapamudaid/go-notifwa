@@ -16,6 +16,7 @@ type SendJob struct {
 	TargetJID types.JID
 	Message   *waProto.Message
 	Type      string
+	Token     string // Token device untuk traceability log
 }
 
 var JobQueue = make(chan SendJob, 10000) // Buffer besar untuk queue
@@ -38,11 +39,24 @@ func processJob(workerID int, job SendJob) {
 	delay := time.Duration(rand.Intn(4000)+1000) * time.Millisecond
 	time.Sleep(delay)
 
+	// Cek apakah client masih terhubung sebelum kirim.
+	// Jika client disconnect antara saat job masuk queue dan saat diproses,
+	// kita skip daripada kirim ke client yang sudah mati.
+	if job.Client == nil || !job.Client.IsConnected() {
+		log.Printf("[Worker %d] Skipped %s message to %s (token=%s): client disconnected\n",
+			workerID, job.Type, job.TargetJID, job.Token)
+		job.Message = nil
+		job.Client = nil
+		return
+	}
+
 	_, err := job.Client.SendMessage(context.Background(), job.TargetJID, job.Message)
 	if err != nil {
-		log.Printf("[Worker %d] Failed to send %s message to %s: %v\n", workerID, job.Type, job.TargetJID, err)
+		log.Printf("[Worker %d] Failed to send %s message to %s (token=%s): %v\n",
+			workerID, job.Type, job.TargetJID, job.Token, err)
 	} else {
-		log.Printf("[Worker %d] Successfully sent %s message to %s\n", workerID, job.Type, job.TargetJID)
+		log.Printf("[Worker %d] Successfully sent %s message to %s (token=%s)\n",
+			workerID, job.Type, job.TargetJID, job.Token)
 	}
 
 	// Auto clean / Garbage Collection Helper
